@@ -1,4 +1,6 @@
 import discord
+from discord.utils import get
+import time
 
 # Google Sheets API stuff. See https://www.youtube.com/watch?v=vISRn5qFrkM for details.
 # This could also probably be done in Excel but whatever sheets rocks n rules
@@ -8,7 +10,7 @@ import gspread
 from gspread.exceptions import SpreadsheetNotFound
 from oauth2client.service_account import ServiceAccountCredentials
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-creds = ServiceAccountCredentials.from_json_keyfile_name('creds.json', scope) # filler file name - you'll download it in the Google API setup process 
+creds = ServiceAccountCredentials.from_json_keyfile_name('creds.json', scope)
 sheets_client = gspread.authorize(creds)
 
 
@@ -21,7 +23,14 @@ state = { # Several important state variables I decided to keep in the same plac
     "tossup player": "",
     "bonus team": "",
     "awaiting sheet": False,
-    "sheet": "" # Needs to be initialized with the link sheet command. Eventually a sheets_client.open(message.content).sheet1 object 
+    "sheet": "", # Needs to be initialized with the link sheet command. Eventually a sheets_client.open(message.content).sheet1 object 
+    "max players": 6, # sheet tings
+    "red score": 0,
+    "red tossups": {},
+    "red bonuses": [],
+    "blue score": 0,
+    "blue tossups": {},
+    "blue bonuses": [],
 }
 
 def is_admin(user): # Returns true if the user has the Captain or Moderator role. Controls who gets to control the bot.
@@ -118,12 +127,46 @@ async def begin(message): # Equivalent to flipping the "run/pause" switch on a b
         color = discord.Color(0x00ff00)
     )
     state["ready"] = True
+
+    await initialize_memory(message)
+        
+
     await message.channel.send(embed=embed)
+
+async def initialize_memory(message):
+    for x in range(0, 24):
+        state["red bonuses"].append([])
+        state["blue bonuses"].append([])
+
+    state["red tossups"] = {}
+    state["blue tossups"] = {}
+    #initialize internal scorekeeping
+    for user in client.get_channel(731169225745498152).members: 
+        if team(user) == 'red':
+            state["red tossups"][user.id] = [""]*24
+        elif team(user) == 'blue':
+            state["blue tossups"][user.id] = [""]*24
+        else:
+            await message.channel.send(f"Please assign **{user.display_name}** a valid team!")
+
+async def update_memory(message):
+    for user in client.get_channel(731169225745498152).members: 
+        if (team(user) == 'red'):
+            if (user.id not in state["red tossups"].keys()):
+                state["red tossups"][user.id] = [""]*24
+                await message.channel.send(f"Player **{user.display_name}** added to the **red** team")
+        elif (team(user) == 'blue'):
+            if (user.id not in state["blue tossups"].keys()):
+                state["blue tossups"][user.id] = [""]*24
+                await message.channel.send(f"Player **{user.display_name}** added to the **blue** team")
+        else:
+            await message.channel.send(f"Please assign **{user.display_name}** a valid team!")
 
 async def new_match(message): # Runs reset, brings the tossup variable back to 1 and unlinks the sheet.
     await reset(message.channel)
     state["tossup"] = 1
     state["sheet"] = ""
+    await initialize_memory(message)
     await message.channel.send(f'Game reset!')
 
 async def next_tossup(message): #self-explanatory.
@@ -150,9 +193,9 @@ async def link_sheet_p2(message):
 async def insert_player(user, message, alert_already_existing=False):
     cells = []
     if team(user) == "red":
-        cells = range(2, 8)
+        cells = list(range(2, 2+state["max players"]))
     elif team(user) == "blue":
-        cells = range(14, 20)
+        cells = list(range(8+state["max players"], 8+(2 * state["max players"])))
     for col in cells:
         if state["sheet"].cell(7, col).value == user.display_name: # user already in that team
             if alert_already_existing:
@@ -162,7 +205,7 @@ async def insert_player(user, message, alert_already_existing=False):
             state["sheet"].update_cell(7, col, user.display_name)
             await message.channel.send(f"Added **{user.display_name}** in column **{col}**")
             break
-        if col == 7 and state["sheet"].cell(7, col).value:
+        if col == cells[-1] and state["sheet"].cell(7, col).value:
             await message.channel.send(f"The **{team(user)}** team already has 6 players! **{user.display_name}** was unable to be added to the sheet.")
 
     if not cells:
@@ -183,15 +226,15 @@ async def update_sheet(message):
         await message.channel.send("Please link a sheet!")
 
 def get_column(player): # Gets the column in the linked sheet corresponding to a display name.
-    print(team(player))
+    #print(team(player))
     if state["sheet"] != "":
         possible_cols = []
         if team(player) == "red":
-            possible_cols = range(2, 8)
+            possible_cols = range(2, 2+state["max players"])
         else:
             if team(player) == "blue":
-                possible_cols = range(14, 20)
-        print(possible_cols)
+                possible_cols = range(8+state["max players"], 8+(2 * state["max players"]))
+        #print(possible_cols)
         """else:
             possible_cols = (range(2, 8)) + (range(14, 20))"""
         for col in possible_cols:
@@ -201,12 +244,10 @@ def get_column(player): # Gets the column in the linked sheet corresponding to a
     else:
         return "no linked sheet"
 
-async def tossup_score(message): # Ran by the moderator with "tossup [score]" after someone gives an answer.
-    print(state["tossup player"])
-    print(team(state["tossup player"]))
-    if state["sheet"] != "" and state["tossup player"]:
+async def tossup_score(message):
+    if state["tossup player"]:
         if message.content.lower().split()[1] in ["neg", "incorrect", "-5", "none", "zero", "0", "ten", "10", "power", "15"]:
-            if type(get_column(state["tossup player"])) == int:
+            if (state["tossup player"]).id in (state["red tossups"]).keys() or (state["tossup player"]).id in (state["blue tossups"]).keys():
                 score = 0
                 embed_title = ""
                 embed_color = discord.Color(0x999999)
@@ -229,9 +270,12 @@ async def tossup_score(message): # Ran by the moderator with "tossup [score]" af
                     embed_desc = f"Nice buzz! The **{team(state['tossup player'])}** team gets 15 points and a chance to answer 3 bonus questions."
                     embed_color = team_color(state["tossup player"])
 
-                
-                state["sheet"].update_cell(state["tossup"]+7, get_column(state["tossup player"]), score)
-                
+                state[team(state["tossup player"]) + " tossups"][(state["tossup player"]).id][state["tossup"] - 1] = score
+                state[team(state["tossup player"]) + " score"] += score
+
+                if state["sheet"]:
+                    state["sheet"].update_cell(state["tossup"]+7, get_column(state["tossup player"]), score)
+
                 embed = discord.Embed(
                     title = embed_title,
                     description = embed_desc,
@@ -244,15 +288,18 @@ async def tossup_score(message): # Ran by the moderator with "tossup [score]" af
                 if message.content.lower().split()[1] in ["ten", "10", "power", "15"]: #move to the bonus if the answer was wrong
                     await bonus_init(message, team(state['tossup player']))
             else:
-                await message.channel.send("Player not found in sheet.")
+                await message.channel.send("Player not found in memory.")
         else:
             await message.channel.send("Possible score values include neg, incorrect, -5, none, zero, 0, ten, 10, power, and 15")
     else:
-        await message.channel.send("To score a tossup, a sheet must be linked and a player must have buzzed in after the last reset.")
+        await message.channel.send("To score a tossup, a player must have buzzed in after the last reset.")
+  
+                
+               
 
 
 async def bonus_score(message): # Ran by the moderator with "bonus score [y/n][y/n][y/n]" after a bonus has been answered. 
-    if state["sheet"] != "" and state["bonus team"]:
+    if state["bonus team"]:
         data = message.content.lower().split()[2]
 
         col_offset = 8
@@ -260,16 +307,21 @@ async def bonus_score(message): # Ran by the moderator with "bonus score [y/n][y
             col_offset = 20
         
         score = 0
+        
         for bonus_question in range(0, 3):
             if data[bonus_question] in ["y", "1"]:
-                state["sheet"].update_cell(state["tossup"]+7, col_offset+bonus_question, 10)
+                if state["sheet"]:
+                    state["sheet"].update_cell(state["tossup"]+7, col_offset+bonus_question, 10)
                 score += 10
+                state[state["bonus team"] + " bonuses"][state["tossup"] - 1].append(True)
             else:
-                state["sheet"].update_cell(state["tossup"]+7, col_offset+bonus_question, 0)
-
+                if state["sheet"]:
+                    state["sheet"].update_cell(state["tossup"]+7, col_offset+bonus_question, 0)
+                state[state["bonus team"] + " bonuses"][state["tossup"] - 1].append(False)
         embed_desc = ""
         embed_color = discord.Color(0x999999)
 
+        state[state["bonus team"] + " score"] += score
         if score == 0:
             embed_desc = "Better luck next time!"
         elif score == 10:
@@ -298,28 +350,32 @@ async def bonus_score(message): # Ran by the moderator with "bonus score [y/n][y
         await message.channel.send("Make sure a sheet has linked and a team has been assigned the bonus!")
 
 async def score_check(message):
+    red_score = state["red score"]
+    blue_score = state["blue score"]
+    print(state["red tossups"])
+    print(state["red bonuses"])
+    print(state["blue tossups"])
+    print(state["blue bonuses"])
     if state["sheet"]:
         red_score = int(state["sheet"].cell(45, 2).value)
-        blue_score = int(state["sheet"].cell(45, 14).value)
+        blue_score = int(state["sheet"].cell(45, 8+state["max players"]).value)
         
-        embed_color = discord.Color(0x999999)
-        embed_desc = f"After {state['tossup'] - 1} tossups, the game is all tied up!"
+    embed_color = discord.Color(0x999999)
+    embed_desc = f"After {state['tossup'] - 1} tossups, the game is all tied up!"
 
-        if red_score > blue_score:
-            embed_color = discord.Color(0xff0000)
-            embed_desc = f"After {state['tossup'] - 1} tossups, the red team is ahead!"
-        if blue_score > red_score:
-            embed_color = discord.Color(0x0000ff)
-            embed_desc = f"After {state['tossup'] - 1} tossups, the blue team is ahead!"
+    if red_score > blue_score:
+        embed_color = discord.Color(0xff0000)
+        embed_desc = f"After {state['tossup'] - 1} tossups, the red team is ahead!"
+    if blue_score > red_score:
+        embed_color = discord.Color(0x0000ff)
+        embed_desc = f"After {state['tossup'] - 1} tossups, the blue team is ahead!"
 
-        embed = discord.Embed(
-            title = f"Red team {red_score}, Blue team {blue_score}!",
-            description = embed_desc,
-            color = embed_color
-        )
-        await message.channel.send(embed=embed)
-    else:
-        await message.channel.send("Please link a valid sheet!")
+    embed = discord.Embed(
+        title = f"Red team {red_score}, Blue team {blue_score}!",
+        description = embed_desc,
+        color = embed_color
+    )
+    await message.channel.send(embed=embed)
 
 async def bounceback(message): # lets the team NOT answering a bonus take a swing 
     for user in client.get_channel(731169225745498152).members:
@@ -333,14 +389,36 @@ async def return_from_bounce(message): # returns to the state before the bounce 
     for user in client.get_channel(731169225745498152).members:
         if team(user) == state["bonus team"]:
             await user.edit(mute=False)
+        elif is_admin(user) and team(user) != "neither":
+            await user.edit(mute=False)
         else:
             await user.edit(mute=True)
     await message.channel.send("Back to normal.")
 
+async def set_tossup(message):
+    if len(message.content.split()) == 3:
+        try: 
+            state["tossup"] = int(message.content.lower().split()[2])
+            await message.channel.send(f"Tossup **{state['tossup']}**")
+        except ValueError:
+            await message.channel.send("Tossup value must be set to a number")
+    else:
+        await message.channel.send("Proper format is `set tossup <tossup number>`")
+
+async def take_attendance(message):
+    file = open(f"./attendance/attendance {time.asctime()}.txt", "w")
+    for user in client.get_channel(731169225745498152).members:
+        file.write(user.display_name + '\n')
+    file.close()
+async def demask_players(message):
+    for member in message.guild.members:
+        if team(member) in ["red", "blue", "both"]:
+            await member.remove_roles(get(message.guild.roles, id=731169562879328316), get(message.guild.roles, id=731169675697717328))
+            #member.remove_roles(message.guild.roles.get("731169562879328316"), message.guild.roles.get("731169675697717328"))
+
 @client.event
 async def on_ready():
     print('Logged on as {0}!'.format(client.user))
-
     
 @client.event
 async def on_message(message):
@@ -381,8 +459,16 @@ async def on_message(message):
                 await bounceback(message)
             if message.content.lower() in ["return", "go back"]:
                 await return_from_bounce(message)
+            if message.content.lower().startswith("set tossup"):
+                await set_tossup(message)
+            if message.content.lower() in ["update memory"]:
+                await update_memory(message)
+            if message.content.lower() in ["demask all", "demask players"]:
+                await demask_players(message)
+            if message.content.lower() in ["take attendance"]:
+                await take_attendance(message)
             if message.content.lower() in ["shut down", "shutdown"]:
                 await message.channel.send("Au revoir!")
                 await client.close()
 
-client.run('Token') # Token of your discord bot. Acquired when making your application
+client.run('Bot token here')
